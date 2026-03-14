@@ -15,11 +15,20 @@ from typing import List, Dict, Optional, Any
 import time
 import json
 import torch
-
+import numpy as np
 import chromadb
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
+import whisper
+stt_model = whisper.load_model("base")
+
+def transcribe(audio_buffer: list) -> str:
+    audio_data = b''.join(audio_buffer)
+    audio_array = (np.frombuffer(audio_data, dtype=np.int16)
+                   .astype(np.float32) / 32768.0)
+    result = stt_model.transcribe(audio_array, language="en")
+    return result["text"].strip()
 
 # =========================
 # CONFIG
@@ -30,7 +39,8 @@ class RAGConfig:
     persist_dir: str = "./chroma_memory_db"
     collection_name: str = "memories"
     embedding_model: str = "BAAI/bge-base-en-v1.5"
-    llm_model: str = "Qwen/Qwen2.5-3B-Instruct"
+    #llm_model: str = "Qwen/Qwen2.5-3B-Instruct"
+    llm_model: str = "Qwen/Qwen2.5-1.5B-Instruct"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     top_k: int = 5
     min_similarity: float = 0.55
@@ -82,11 +92,19 @@ class MemoryRAG:
 
         # LLM
         self.tokenizer = AutoTokenizer.from_pretrained(self.config.llm_model, trust_remote_code=True)
+        '''
         self.model = AutoModelForCausalLM.from_pretrained(
             self.config.llm_model,
             trust_remote_code=True,
             device_map="auto"
         )
+    '''
+        self.model = AutoModelForCausalLM.from_pretrained(
+        self.config.llm_model,
+        trust_remote_code=True,
+        torch_dtype=torch.float16,
+        device_map={"": "cpu"}
+)
 
     # =========================
     # MEMORY STORAGE
@@ -200,28 +218,27 @@ class MemoryRAG:
             {"role": "user", "content": f"MEMORY CONTEXT:\n{context}\n\nQUESTION: {query}\n\nReturn ONE short sentence only."}
         ]
 
-        inputs = self.tokenizer.apply_chat_template(
+        # FIXED Generate bug
+        input_ids = self.tokenizer.apply_chat_template(
             messages,
             return_tensors="pt",
             add_generation_prompt=True
-        )
-
-        # Always convert to device and pass as kwargs
-        inputs = inputs.to(self.model.device)
+        ).to(self.model.device)
 
         output = self.model.generate(
-            **inputs,
+            input_ids=input_ids,
             max_new_tokens=40,
             do_sample=False,
             eos_token_id=self.tokenizer.eos_token_id,
             pad_token_id=self.tokenizer.eos_token_id
         )
 
-        response = self.tokenizer.decode(output[0], skip_special_tokens=True).strip()
-        response = response.split("\n")[-1].strip()
+        new_tokens = output[0][input_ids.shape[1]:]
+        response = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
         if not response:
             response = self.config.fallback_response
+
 
         return {
             "response": response,

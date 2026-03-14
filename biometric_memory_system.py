@@ -28,6 +28,17 @@ import os
 import sys
 import shutil
 from pathlib import Path
+import whisper
+from memory_rag import MemoryRAG, MemoryItem, RAGConfig
+
+stt_model = whisper.load_model("base")
+
+def transcribe(audio_buffer: list) -> str:
+    audio_data = b''.join(audio_buffer)
+    audio_array = (np.frombuffer(audio_data, dtype=np.int16)
+                   .astype(np.float32) / 32768.0)
+    result = stt_model.transcribe(audio_array, language="en")
+    return result["text"].strip()
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
@@ -115,10 +126,10 @@ class SystemConfig:
     USE_QUANTIZATION: bool = True
     
     FACE_MODEL: str = "buffalo_s"
-    FACE_DET_SIZE: tuple = (320, 320)
+    FACE_DET_SIZE: tuple = (640, 640)
     VOICE_MODEL: str = "speechbrain/spkrec-ecapa-voxceleb"
     
-    CAMERA_ID: int = 0
+    CAMERA_ID: int = 1
     FRAME_WIDTH: int = 640
     FRAME_HEIGHT: int = 480
     TARGET_FPS: int = 15
@@ -580,9 +591,13 @@ class BiometricMemorySystem:
     def _camera_worker(self, duration: float):
         cap = None
         try:
-            cap = cv2.VideoCapture(self.config.CAMERA_ID)
+            #cap = cv2.VideoCapture(self.config.CAMERA_ID)
+            cap = cv2.VideoCapture(self.config.CAMERA_ID, cv2.CAP_AVFOUNDATION)
+
+
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.FRAME_WIDTH)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.FRAME_HEIGHT)
+
             
             if not cap.isOpened():
                 Logger.error("Cannot open camera")
@@ -594,16 +609,22 @@ class BiometricMemorySystem:
                 ret, frame = cap.read()
                 if not ret:
                     continue
+                # added to detect faces in the current frame and update the face processor
+                #rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                faces = self.model_manager.face_model.get(frame)
+                print("Faces detected:", len(faces))
+                #faces = self.face_model.get(rgb_frame)
                 
                 self.face_processor.process_frame(frame)
                 
                 status = f"Samples: {len(self.face_processor.embeddings)}/{self.config.MIN_FACE_SAMPLES}"
                 cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                cv2.imshow('MEMORA', frame)
+                #cv2.imshow('MEMORA', frame)
+                pass  # Commented out to avoid GUI issues in headless environments
                 
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    self.running = False
-                    break
+                #if cv2.waitKey(1) & 0xFF == ord('q'):
+                 #   self.running = False
+                  #  break
         finally:
             if cap:
                 cap.release()
@@ -811,9 +832,7 @@ def main():
             
             elif choice == "2":
                 result = system.verify_user()
-                if result:
-                    print(f"\nResult: {json.dumps(result, indent=2)}")
-            
+           
             elif choice == "3":
                 system.list_users()
             
