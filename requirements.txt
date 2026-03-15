@@ -13,6 +13,11 @@ opencv-python
 pyaudio
 openai-whisper
 
+# Web Backend
+fastapi
+uvicorn
+python-multipart
+
 chromadb
 sentence-transformers
 transformers
