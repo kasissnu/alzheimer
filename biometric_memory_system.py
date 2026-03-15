@@ -147,9 +147,9 @@ class SystemConfig:
     FACE_BUFFER_SIZE: int = 5
     VOICE_BUFFER_SIZE: int = 3
     
-    FACE_THRESHOLD: float = 0.55
-    VOICE_THRESHOLD: float = 0.65
-    FUSION_WEIGHT: float = 0.6
+    FACE_THRESHOLD: float = 0.5
+    VOICE_THRESHOLD: float = 0.5
+    FUSION_WEIGHT: float = 0.75
     CONFIDENCE_HIGH: float = 0.85
     CONFIDENCE_MEDIUM: float = 0.70
     
