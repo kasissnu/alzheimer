@@ -1,0 +1,46 @@
+
+<html>
+<body>
+
+<h1>Memora Dashboard</h1>
+
+<input type="file" id="faceInput"><br><br>
+<input type="file" id="voiceInput"><br><br>
+<input type="file" id="speechInput"><br><br>
+
+<button onclick="identify()">Identify Speaker</button>
+
+<p id="result"></p>
+
+<hr>
+
+<button onclick="window.location.href='/add-memory'">Add Memory</button>
+<button onclick="window.location.href='/person'">Person Info</button>
+<button onclick="window.location.href='/voice'">Voice Assistant</button>
+<button onclick="window.location.href='/search'">Memory Search</button>
+
+<script>
+
+async function identify(){
+
+let formData=new FormData()
+
+formData.append("face",document.getElementById("faceInput").files[0])
+formData.append("voice",document.getElementById("voiceInput").files[0])
+formData.append("speech",document.getElementById("speechInput").files[0])
+
+let response=await fetch("/identify",{
+method:"POST",
+body:formData
+})
+
+let data=await response.json()
+
+document.getElementById("result").innerText=data.response
+
+}
+
+</script>
+
+</body>
+</html>
