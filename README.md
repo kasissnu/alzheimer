@@ -1,2 +1,23 @@
-# Memora-AR-Based-Cognitive-Assistive-Platform
-Memora: AR-Based Cognitive Assistive Platform for Early Stage Alzheimer's Patients Integrating Facial Recognition, Age Progression Tolerance, Lifelong Learning, and Voice-Based NLP Prompts.
+# Memora Cognitive Assistive System
+
+This project helps Alzheimer’s patients recognize people around them.
+
+Pipeline:
+
+Camera + Microphone
+↓
+ArcFace Face Recognition
++
+ECAPA-TDNN Speaker Recognition
+↓
+Identity Fusion
+↓
+user_id
+↓
+Whisper Speech Recognition
+↓
+Memory RAG Retrieval
+↓
+LLM Response
+↓
+Coqui TTS Speech Output
