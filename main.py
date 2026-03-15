@@ -82,18 +82,9 @@ def prompt_for_user_id_by_name(prompt_text: str) -> Optional[str]:
     return None
 
 
-def print_history(user_id: str, limit: int = 20) -> None:
-    history = conversation_store.get_history(user_id, limit=limit)
-    if not history:
-        print("[INFO] No prior conversations stored for this user.")
-        return
-
-    print(f"\n=== Previous Conversations for {user_id} (last {len(history)}) ===")
-    for entry in history:
-        timestamp = entry.get("timestamp", "?")
-        source = entry.get("source", "unknown")
-        text = entry.get("text", "")
-        print(f"[{timestamp}] ({source}) {text}")
+def print_history_summary(user_id: str) -> None:
+    summary = conversation_store.summarize_history(user_id)
+    print(f"\n[CONTEXT] {summary}")
 
 
 def register_user_flow() -> None:
@@ -130,7 +121,7 @@ def identify_user_flow() -> None:
     display_name = result.get("name") or user_id
     print(f"[STEP 2] Verified: {display_name} [{user_id}] ({result['confidence']})")
 
-    print_history(user_id, limit=20)
+    print_history_summary(user_id)
 
 
 def add_memories_flow() -> None:
