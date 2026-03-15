@@ -1,3 +1,4 @@
+import threading
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -32,55 +33,28 @@ def format_user_label(user: Dict) -> str:
     return f"{user.get('name', 'Unknown')} [{user.get('user_id', '?')}]"
 
 
-def build_user_index(include_history_only: bool = False) -> List[Dict]:
-    users = system.db.list_users()
-    history_ids = set(conversation_store.list_users())
-    indexed_users: List[Dict] = []
-    seen_user_ids = set()
-
-    for user in users:
-        user_id = user.get("user_id")
-        if not user_id or user_id in seen_user_ids:
-            continue
-
-        has_history = user_id in history_ids
-        if include_history_only and not has_history:
-            continue
-
-        user_copy = dict(user)
-        user_copy["has_history"] = has_history
-        indexed_users.append(user_copy)
-        seen_user_ids.add(user_id)
-
-    for user_id in sorted(history_ids):
-        if user_id in seen_user_ids:
-            continue
-        indexed_users.append(
-            {
-                "user_id": user_id,
-                "name": "Unknown",
-                "registered_at": "history only",
-                "has_history": True,
-            }
-        )
-
-    return indexed_users
+def get_registered_users() -> List[Dict]:
+    return system.db.list_users()
 
 
-def prompt_for_user_id(prompt_text: str, *, history_only: bool = False) -> Optional[str]:
-    users = build_user_index(include_history_only=history_only)
+def find_registered_user_by_name(name: str) -> Optional[Dict]:
+    normalized_name = name.strip().lower()
+    for user in get_registered_users():
+        if user.get("name", "").strip().lower() == normalized_name:
+            return user
+    return None
+
+
+def prompt_for_user_id_by_name(prompt_text: str) -> Optional[str]:
+    users = get_registered_users()
     if not users:
-        if history_only:
-            print("No conversation histories found.")
-        else:
-            print("No users found.")
+        print("No users found.")
         return None
 
     print()
     for index, user in enumerate(users, start=1):
-        history_marker = " | history" if user.get("has_history") else ""
         registered_at = user.get("registered_at", "unknown")
-        print(f"[{index}] {format_user_label(user)} ({registered_at}){history_marker}")
+        print(f"[{index}] {format_user_label(user)} ({registered_at})")
 
     selection = input(f"{prompt_text} ").strip()
     if not selection:
@@ -91,7 +65,21 @@ def prompt_for_user_id(prompt_text: str, *, history_only: bool = False) -> Optio
         if 1 <= selection_index <= len(users):
             return users[selection_index - 1].get("user_id")
 
-    return selection
+    exact_matches = [
+        user for user in users
+        if user.get("name", "").strip().lower() == selection.lower()
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0].get("user_id")
+    if len(exact_matches) > 1:
+        print("Multiple users share that name. Please select by number.")
+        return None
+
+    for user in users:
+        if user.get("user_id") == selection:
+            return user.get("user_id")
+
+    return None
 
 
 def print_history(user_id: str, limit: int = 20) -> None:
@@ -114,6 +102,11 @@ def register_user_flow() -> None:
         print("Name cannot be empty.")
         return
 
+    existing_user = find_registered_user_by_name(name)
+    if existing_user:
+        print(f"[INFO] User already exists: {format_user_label(existing_user)}")
+        return
+
     success = system.register_user(name)
     if not success:
         return
@@ -122,20 +115,12 @@ def register_user_flow() -> None:
     if not user_id:
         print("[WARNING] Registration succeeded but no user_id was returned.")
         return
-
-    transcript = transcribe(system.voice_processor.audio_buffer)
-    if not transcript:
-        print("[INFO] Registration completed, but no speech was captured to store.")
-        return
-
-    conversation_store.store_utterance(user_id, transcript, source="register")
-    print(f"[INFO] Stored enrollment transcript for {user_id}")
-    print(f"[INFO] Captured this session: {transcript}")
+    print(f"[INFO] Registered user: {user_id}")
 
 
 def identify_user_flow() -> None:
-    print("\n[STEP 1] Look at camera and speak (5 seconds)...")
-    result = system.verify_user()
+    print("\n[STEP 1] Look at camera (5 seconds)...")
+    result = system.verify_user(face_only=True)
 
     if not result or not result.get("verified"):
         print("This appears to be a new or unrecognized person. Please register first.")
@@ -147,17 +132,33 @@ def identify_user_flow() -> None:
 
     print_history(user_id, limit=20)
 
-    transcript = transcribe(system.voice_processor.audio_buffer)
-    if not transcript:
-        print("[INFO] No speech captured for this session.")
+
+def add_memories_flow() -> None:
+    user_id = prompt_for_user_id_by_name("Enter user number or exact name to add memories for:")
+    if not user_id:
+        print("Invalid user selection.")
         return
 
-    conversation_store.store_utterance(user_id, transcript, source="verify")
-    print(f"[INFO] Captured this session: {transcript}")
+    print("\n[STEP 1] Speak now to record a memory (7 seconds)...")
+    system.voice_processor.clear()
+    system.running = True
+    audio_thread = threading.Thread(target=system._audio_worker, args=(7,))
+    audio_thread.start()
+    audio_thread.join()
+    system.running = False
+
+    transcript = transcribe(system.voice_processor.audio_buffer)
+    if not transcript:
+        print("[INFO] No speech captured for this memory.")
+        return
+
+    conversation_store.store_utterance(user_id, transcript, source="memory")
+    print(f"[INFO] Stored memory for {user_id}")
+    print(f"[INFO] Captured memory: {transcript}")
 
 
 def delete_user_flow() -> None:
-    user_id = prompt_for_user_id("Enter user number or user_id to delete:")
+    user_id = prompt_for_user_id_by_name("Enter user number or exact name to delete:")
     if not user_id:
         print("Invalid user selection.")
         return
@@ -178,21 +179,12 @@ def delete_user_flow() -> None:
         print(f"[INFO] No conversation history found for {user_id}")
 
 
-def show_history_flow() -> None:
-    user_id = prompt_for_user_id("Enter user number or user_id to inspect history:", history_only=True)
-    if not user_id:
-        print("Invalid user selection.")
-        return
-
-    print_history(user_id, limit=20)
-
-
 while True:
     print("\n[1] Register user")
-    print("[2] Identify user + show prior history")
-    print("[3] List users")
-    print("[4] Delete user")
-    print("[5] Show conversation history")
+    print("[2] Identify user and fetch their memories")
+    print("[3] Add memories for existing user")
+    print("[4] Show all users stored")
+    print("[5] Delete user by name")
     print("[6] Exit")
 
     choice = input("\nEnter choice: ").strip()
@@ -204,13 +196,13 @@ while True:
         identify_user_flow()
 
     elif choice == "3":
-        system.list_users()
+        add_memories_flow()
 
     elif choice == "4":
-        delete_user_flow()
+        system.list_users()
 
     elif choice == "5":
-        show_history_flow()
+        delete_user_flow()
 
     elif choice == "6":
         system.cleanup()

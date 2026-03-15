@@ -438,32 +438,36 @@ class DatabaseManager:
                 else:
                     raise
     
-    def add_user(self, user_id: str, face_emb: np.ndarray, voice_emb: np.ndarray, metadata: dict):
+    def add_user(self, user_id: str, face_emb: np.ndarray, voice_emb: Optional[np.ndarray], metadata: dict):
         try:
             self.face_collection.add(
                 embeddings=[face_emb.tolist()],
                 ids=[f"face_{user_id}"],
                 metadatas=[metadata]
             )
-            self.voice_collection.add(
-                embeddings=[voice_emb.tolist()],
-                ids=[f"voice_{user_id}"],
-                metadatas=[metadata]
-            )
+            if voice_emb is not None:
+                self.voice_collection.add(
+                    embeddings=[voice_emb.tolist()],
+                    ids=[f"voice_{user_id}"],
+                    metadatas=[metadata]
+                )
             Logger.success(f"User '{metadata['name']}' saved")
             return True
         except Exception as e:
             Logger.error(f"Failed to save user: {e}")
             return False
     
-    def search_user(self, face_emb: np.ndarray, voice_emb: np.ndarray, top_k: int = 3):
+    def search_user(self, face_emb: np.ndarray, voice_emb: Optional[np.ndarray] = None, top_k: int = 3):
         try:
             face_results = self.face_collection.query(
                 query_embeddings=[face_emb.tolist()], n_results=top_k
             )
-            voice_results = self.voice_collection.query(
-                query_embeddings=[voice_emb.tolist()], n_results=top_k
-            )
+            if voice_emb is not None:
+                voice_results = self.voice_collection.query(
+                    query_embeddings=[voice_emb.tolist()], n_results=top_k
+                )
+            else:
+                voice_results = {"ids": [[]], "metadatas": [[]], "distances": [[]]}
             return face_results, voice_results
         except Exception as e:
             Logger.error(f"Search failed: {e}")
@@ -549,10 +553,16 @@ class VoiceProcessor:
     """Voice processing"""
     
     def __init__(self, model_manager: OptimizedModelManager, config: SystemConfig):
-        self.model = model_manager.load_voice_model()
+        self.model_manager = model_manager
+        self.model = None
         self.config = config
         self.profiler = model_manager.profiler
         self.audio_buffer = []
+
+    def _get_model(self):
+        if self.model is None:
+            self.model = self.model_manager.load_voice_model()
+        return self.model
     
     def add_audio_chunk(self, chunk: bytes):
         self.audio_buffer.append(chunk)
@@ -564,9 +574,10 @@ class VoiceProcessor:
             audio_data = b''.join(self.audio_buffer)
             audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
             audio_tensor = torch.from_numpy(audio_array).unsqueeze(0)
+            model = self._get_model()
             
             with torch.no_grad():
-                embedding = self.model.encode_batch(audio_tensor)[0].squeeze().cpu().numpy()
+                embedding = model.encode_batch(audio_tensor)[0].squeeze().cpu().numpy()
             
             return embedding / np.linalg.norm(embedding)
         except Exception as e:
@@ -689,30 +700,21 @@ class BiometricMemorySystem:
         self.last_registered_user_id = None
         
         Logger.info(f"Registering '{user_name}' ({duration}s)")
-        Logger.info("Look at camera and speak clearly...")
+        Logger.info("Look at camera...")
         
         self.face_processor.clear()
-        self.voice_processor.clear()
         self.running = True
         
         cam_thread = threading.Thread(target=self._camera_worker, args=(duration,))
-        aud_thread = threading.Thread(target=self._audio_worker, args=(duration,))
-        
         cam_thread.start()
-        aud_thread.start()
         cam_thread.join()
-        aud_thread.join()
         
         self.running = False
         
         face_emb = self.face_processor.get_average_embedding()
-        voice_emb = self.voice_processor.process_audio()
         
         if face_emb is None:
             Logger.error("No face detected")
-            return False
-        if voice_emb is None:
-            Logger.error("No voice detected")
             return False
         
         user_id = f"{user_name}_{int(time.time())}"
@@ -723,49 +725,107 @@ class BiometricMemorySystem:
             'device': self.config.DEVICE
         }
         
-        success = self.db.add_user(user_id, face_emb, voice_emb, metadata)
+        success = self.db.add_user(user_id, face_emb, None, metadata)
         
         if success:
             self.last_registered_user_id = user_id
             Logger.success(f" Registered {user_name}")
             Logger.info(f"  Face samples: {len(self.face_processor.embeddings)}")
-            Logger.info(f"  Voice duration: {len(self.voice_processor.audio_buffer) * self.config.AUDIO_CHUNK / self.config.AUDIO_RATE:.1f}s")
         
         return success
     
-    def verify_user(self, duration: int = None) -> Optional[Dict]:
+    def verify_user(self, duration: int = None, face_only: bool = True) -> Optional[Dict]:
         duration = duration or self.config.VERIFY_DURATION
         
-        Logger.info(f"Verifying ({duration}s)")
+        Logger.info(f"Verifying by face ({duration}s)")
         
         self.face_processor.clear()
-        self.voice_processor.clear()
         self.running = True
         
         cam_thread = threading.Thread(target=self._camera_worker, args=(duration,))
-        aud_thread = threading.Thread(target=self._audio_worker, args=(duration,))
-        
         cam_thread.start()
-        aud_thread.start()
         cam_thread.join()
-        aud_thread.join()
         
         self.running = False
         
         face_emb = self.face_processor.get_average_embedding()
-        voice_emb = self.voice_processor.process_audio()
         
-        if face_emb is None or voice_emb is None:
-            Logger.error("Insufficient data")
+        if face_emb is None:
+            Logger.error("Insufficient face data")
             return None
         
-        face_results, voice_results = self.db.search_user(face_emb, voice_emb)
+        face_results, voice_results = self.db.search_user(face_emb, None if face_only else self.voice_processor.process_audio())
         
         if face_results is None:
             Logger.error("Search failed")
             return None
         
+        if face_only:
+            return self._face_only_results(face_results)
+
         return self._fuse_results(face_results, voice_results)
+
+    def _face_only_results(self, face_results) -> Dict:
+        Logger.info("\n=== Face Recognition Results ===")
+
+        best_user_id = None
+        best_name = None
+        best_score = -1.0
+
+        for doc_id, meta, dist in zip(
+            face_results.get('ids', [[]])[0],
+            face_results.get('metadatas', [[]])[0],
+            face_results.get('distances', [[]])[0]
+        ):
+            meta = meta or {}
+            user_id = meta.get('user_id')
+            if not user_id and isinstance(doc_id, str) and doc_id.startswith("face_"):
+                user_id = doc_id[len("face_"):]
+            if not user_id:
+                continue
+
+            similarity = 1 - dist
+            if similarity > best_score:
+                best_score = similarity
+                best_user_id = user_id
+                best_name = meta.get('name', 'Unknown')
+
+        if best_user_id is None:
+            Logger.warning("No face matches found")
+            return {
+                'verified': False,
+                'identity': None,
+                'name': None,
+                'confidence': "LOW",
+                'fused_score': 0.0,
+                'scores': {'face': 0.0, 'voice': 0.0, 'fused': 0.0}
+            }
+
+        Logger.info(f"Best face match: {best_name} [{best_user_id}]")
+        Logger.info(f"  Face similarity: {best_score:.3f}")
+
+        if best_score >= self.config.CONFIDENCE_HIGH:
+            verified, confidence = True, "HIGH"
+        elif best_score >= self.config.CONFIDENCE_MEDIUM:
+            verified, confidence = True, "MEDIUM"
+        elif best_score >= self.config.FACE_THRESHOLD:
+            verified, confidence = True, "LOW"
+        else:
+            verified, confidence = False, "LOW"
+
+        if verified:
+            Logger.success(f" VERIFIED: {best_name} [{best_user_id}] ({confidence})")
+        else:
+            Logger.warning(f" REJECTED: {best_name} [{best_user_id}]")
+
+        return {
+            'verified': verified,
+            'identity': best_user_id if verified else None,
+            'name': best_name if verified else None,
+            'confidence': confidence,
+            'fused_score': best_score,
+            'scores': {'face': best_score, 'voice': 0.0, 'fused': best_score}
+        }
     
     def _fuse_results(self, face_results, voice_results) -> Dict:
         Logger.info("\n=== Recognition Results ===")
