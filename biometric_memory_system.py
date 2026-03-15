@@ -613,6 +613,7 @@ class BiometricMemorySystem:
         self.voice_processor = VoiceProcessor(self.model_manager, self.config)
         
         self.running = False
+        self.last_registered_user_id = None
         self.pyaudio = pyaudio.PyAudio()
         
         Logger.success("System initialized")
@@ -685,6 +686,7 @@ class BiometricMemorySystem:
     
     def register_user(self, user_name: str, duration: int = None) -> bool:
         duration = duration or self.config.REG_DURATION
+        self.last_registered_user_id = None
         
         Logger.info(f"Registering '{user_name}' ({duration}s)")
         Logger.info("Look at camera and speak clearly...")
@@ -724,6 +726,7 @@ class BiometricMemorySystem:
         success = self.db.add_user(user_id, face_emb, voice_emb, metadata)
         
         if success:
+            self.last_registered_user_id = user_id
             Logger.success(f" Registered {user_name}")
             Logger.info(f"  Face samples: {len(self.face_processor.embeddings)}")
             Logger.info(f"  Voice duration: {len(self.voice_processor.audio_buffer) * self.config.AUDIO_CHUNK / self.config.AUDIO_RATE:.1f}s")
