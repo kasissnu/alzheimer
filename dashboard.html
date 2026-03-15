@@ -1,0 +1,44 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<title>Memora Dashboard</title>
+</head>
+
+<body>
+
+<h1>Memora Cognitive Assistant</h1>
+
+<input type="file" id="faceInput">
+<input type="file" id="voiceInput">
+<input type="file" id="speechInput">
+
+<button onclick="identify()">Identify Speaker</button>
+
+<p id="result"></p>
+
+<script>
+
+async function identify(){
+
+let formData = new FormData()
+
+formData.append("face", document.getElementById("faceInput").files[0])
+formData.append("voice", document.getElementById("voiceInput").files[0])
+formData.append("speech", document.getElementById("speechInput").files[0])
+
+let response = await fetch("/identify",{
+method:"POST",
+body:formData
+})
+
+let data = await response.json()
+
+document.getElementById("result").innerText = data.response
+
+}
+
+</script>
+
+</body>
+</html>
