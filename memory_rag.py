@@ -73,29 +73,14 @@ class MemoryRAG:
         self.config = config or RAGConfig()
         self.device = self._resolve_device(self.config.device)
         self._conversation_dir = Path(self.config.conversation_log_dir)
-
-        # Embedding model
-        self.embedder = SentenceTransformer(self.config.embedding_model, device=self.device)
-
-        # Chroma DB
-        self.client = chromadb.PersistentClient(path=self.config.persist_dir)
-        self.collection = self.client.get_or_create_collection(
-            name=self.config.collection_name,
-            metadata={"hnsw:space": "cosine"}
-        )
-
-        # LLM
-        self.tokenizer = AutoTokenizer.from_pretrained(self.config.llm_model, trust_remote_code=True)
-        llm_dtype = torch.float16 if self.device == "cuda" else torch.float32
-        llm_device_map = "auto" if self.device == "cuda" else None
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.config.llm_model,
-            trust_remote_code=True,
-            torch_dtype=llm_dtype,
-            device_map=llm_device_map
-        )
-        if self.device in ("cpu", "mps"):
-            self.model.to(self.device)
+        self.client = None
+        self.collection = None
+        self.embedder = None
+        self.tokenizer = None
+        self.model = None
+        self._collection_error = None
+        self._embedder_error = None
+        self._generation_error = None
 
     def _resolve_device(self, requested: str) -> str:
         requested = (requested or "cpu").lower()
@@ -105,10 +90,70 @@ class MemoryRAG:
             return "mps" if torch.backends.mps.is_available() else "cpu"
         return "cpu"
 
+    def _ensure_collection(self) -> None:
+        if self.collection is not None:
+            return
+        if self._collection_error is not None:
+            raise RuntimeError(f"Memory store unavailable: {self._collection_error}") from self._collection_error
+
+        try:
+            self.client = chromadb.PersistentClient(path=self.config.persist_dir)
+            self.collection = self.client.get_or_create_collection(
+                name=self.config.collection_name,
+                metadata={"hnsw:space": "cosine"}
+            )
+        except Exception as exc:
+            self._collection_error = exc
+            raise RuntimeError(f"Memory store unavailable: {exc}") from exc
+
+    def _ensure_embedder(self) -> None:
+        if self.embedder is not None:
+            return
+        if self._embedder_error is not None:
+            raise RuntimeError(f"Embedding model unavailable: {self._embedder_error}") from self._embedder_error
+
+        try:
+            self.embedder = SentenceTransformer(self.config.embedding_model, device=self.device)
+        except Exception as exc:
+            self._embedder_error = exc
+            raise RuntimeError(f"Embedding model unavailable: {exc}") from exc
+
+    def _ensure_generation_models(self) -> None:
+        if self.tokenizer is not None and self.model is not None:
+            return
+        if self._generation_error is not None:
+            raise RuntimeError(f"Generation model unavailable: {self._generation_error}") from self._generation_error
+
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(self.config.llm_model, trust_remote_code=True)
+            llm_dtype = torch.float16 if self.device == "cuda" else torch.float32
+            llm_device_map = "auto" if self.device == "cuda" else None
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.config.llm_model,
+                trust_remote_code=True,
+                torch_dtype=llm_dtype,
+                device_map=llm_device_map
+            )
+            if self.device in ("cpu", "mps"):
+                self.model.to(self.device)
+        except Exception as exc:
+            self._generation_error = exc
+            raise RuntimeError(f"Generation model unavailable: {exc}") from exc
+
+    def _model_device(self):
+        if self.model is None:
+            return self.device
+        return next(self.model.parameters()).device
+
     # =========================
     # MEMORY STORAGE
     # =========================
     def add_memories(self, memories: List[MemoryItem]) -> List[str]:
+        if not memories:
+            return []
+
+        self._ensure_collection()
+        self._ensure_embedder()
         texts = [m.text for m in memories]
         embeddings = self.embedder.encode(texts, normalize_embeddings=True)
 
@@ -147,6 +192,8 @@ class MemoryRAG:
     # RETRIEVAL
     # =========================
     def retrieve(self, query: str, user_id: Optional[str] = None) -> List[Dict]:
+        self._ensure_collection()
+        self._ensure_embedder()
         query_emb = self.embedder.encode([query], normalize_embeddings=True)[0]
 
         where = {"user_id": user_id} if user_id else None
@@ -202,8 +249,16 @@ class MemoryRAG:
     # RESPONSE GENERATION
     # =========================
     def generate_response(self, query: str, user_id: Optional[str] = None) -> Dict:
-        retrieved = self.retrieve(query, user_id=user_id)
-        context = self.build_context(retrieved)
+        try:
+            retrieved = self.retrieve(query, user_id=user_id)
+            context = self.build_context(retrieved)
+        except Exception as exc:
+            return {
+                "response": self.config.fallback_response,
+                "retrieved": [],
+                "used_fallback": True,
+                "error": str(exc)
+            }
 
         if not context:
             return {
@@ -220,34 +275,56 @@ class MemoryRAG:
             {"role": "user", "content": f"MEMORY CONTEXT:\n{context}\n\nQUESTION: {query}\n\nReturn ONE short sentence only."}
         ]
 
-        # FIXED Generate bug
-        input_ids = self.tokenizer.apply_chat_template(
-            messages,
-            return_tensors="pt",
-            add_generation_prompt=True
-        ).to(self.model.device)
+        try:
+            self._ensure_generation_models()
+            input_ids = self.tokenizer.apply_chat_template(
+                messages,
+                return_tensors="pt",
+                add_generation_prompt=True
+            ).to(self._model_device())
 
-        output = self.model.generate(
-            input_ids=input_ids,
-            max_new_tokens=40,
-            do_sample=False,
-            eos_token_id=self.tokenizer.eos_token_id,
-            pad_token_id=self.tokenizer.eos_token_id
-        )
+            output = self.model.generate(
+                input_ids=input_ids,
+                max_new_tokens=40,
+                do_sample=False,
+                eos_token_id=self.tokenizer.eos_token_id,
+                pad_token_id=self.tokenizer.eos_token_id
+            )
 
-        new_tokens = output[0][input_ids.shape[1]:]
-        response = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+            new_tokens = output[0][input_ids.shape[1]:]
+            response = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
-        if not response:
-            response = self.config.fallback_response
+            if not response:
+                response = self.config.fallback_response
+        except Exception as exc:
+            return {
+                "response": self.config.fallback_response,
+                "retrieved": retrieved,
+                "used_fallback": True,
+                "error": str(exc)
+            }
 
-        used_fallback = (response.strip() == self.config.fallback_response)
+        used_fallback = response.strip() == self.config.fallback_response
 
         return {
             "response": response,
             "retrieved": retrieved,
             "used_fallback": used_fallback
         }
+
+    def get_user_memory_count(self, user_id: str) -> int:
+        self._ensure_collection()
+        result = self.collection.get(where={"user_id": user_id}, include=[])
+        return len(result.get("ids", []))
+
+    def delete_memories_for_user(self, user_id: str) -> int:
+        self._ensure_collection()
+        result = self.collection.get(where={"user_id": user_id}, include=[])
+        memory_ids = result.get("ids", [])
+        if not memory_ids:
+            return 0
+        self.collection.delete(ids=memory_ids)
+        return len(memory_ids)
 
     # =========================
     # CONVERSATION LOGGING (separate from memory retrieval)
@@ -306,6 +383,18 @@ class MemoryRAG:
                     continue
 
         return entries[-limit:]
+
+    def list_conversation_users(self) -> List[str]:
+        if not self._conversation_dir.exists():
+            return []
+        return sorted(path.stem for path in self._conversation_dir.glob("*.jsonl"))
+
+    def delete_conversation_history(self, user_id: str) -> bool:
+        path = self._conversation_log_path(user_id)
+        if not path.exists():
+            return False
+        path.unlink()
+        return True
 
 
 # =========================

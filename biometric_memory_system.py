@@ -489,6 +489,16 @@ class DatabaseManager:
             Logger.error(f"Failed to list users: {e}")
             return []
 
+    def delete_user(self, user_id: str) -> bool:
+        try:
+            self.face_collection.delete(ids=[f"face_{user_id}"])
+            self.voice_collection.delete(ids=[f"voice_{user_id}"])
+            Logger.success(f"Deleted user '{user_id}' from biometric database")
+            return True
+        except Exception as e:
+            Logger.error(f"Failed to delete user '{user_id}': {e}")
+            return False
+
 
 # PROCESSORS
 
@@ -637,7 +647,12 @@ class BiometricMemorySystem:
                 
                 status = f"Samples: {len(self.face_processor.embeddings)}/{self.config.MIN_FACE_SAMPLES}"
                 cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
+                #cv2.imshow('MEMORA', frame)
+                pass  # Commented out to avoid GUI issues in headless environments
+                
+                #if cv2.waitKey(1) & 0xFF == ord('q'):
+                 #   self.running = False
+                  #  break
         finally:
             if cap:
                 cap.release()
@@ -830,6 +845,9 @@ class BiometricMemorySystem:
         Logger.info(f"\n=== Registered Users ({len(users)}) ===")
         for i, user in enumerate(users, 1):
             Logger.info(f"  {i}. {user.get('name')} [{user.get('user_id', '?')}] ({user.get('registered_at')})")
+
+    def delete_user(self, user_id: str) -> bool:
+        return self.db.delete_user(user_id)
     
     def cleanup(self):
         self.running = False
@@ -838,3 +856,62 @@ class BiometricMemorySystem:
         self.model_manager.unload_models()
         Logger.info("Cleanup complete")
 
+# CLI
+
+def main():
+    config = SystemConfig()
+    
+    try:
+        system = BiometricMemorySystem(config)
+        
+        print("\n" + "="*50)
+        print("        MEMORA - Biometric Memory System")
+        print("="*50)
+        print(f"Device: {config.DEVICE.upper()}")
+        print(f"Face Model: {config.FACE_MODEL}")
+        print(f"Quantization: {'Enabled' if config.USE_QUANTIZATION else 'Disabled'}")
+        print("="*50)
+        
+        while True:
+            print("\n[1] Register new user")
+            print("[2] Verify identity")
+            print("[3] List registered users")
+            print("[4] Exit")
+            
+            choice = input("\nEnter choice: ").strip()
+            
+            if choice == "1":
+                user_name = input("Enter user name: ").strip()
+                if user_name:
+                    system.register_user(user_name)
+                else:
+                    Logger.warning("Name cannot be empty")
+            
+            elif choice == "2":
+                result = system.verify_user()
+           
+            elif choice == "3":
+                system.list_users()
+            
+            elif choice == "4":
+                Logger.info("Shutting down...")
+                system.cleanup()
+                break
+            
+            else:
+                Logger.warning("Invalid choice")
+        
+    except KeyboardInterrupt:
+        Logger.info("\nInterrupted")
+    except Exception as e:
+        Logger.error(f"System error: {e}")
+        traceback.print_exc()
+    finally:
+        try:
+            system.cleanup()
+        except:
+            pass
+
+
+if __name__ == "__main__":
+    main()
