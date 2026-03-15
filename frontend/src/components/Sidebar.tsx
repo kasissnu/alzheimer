@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { PlusCircle, Camera, User, Trash2 } from "lucide-react";
+import { PlusCircle, Camera, User, Trash2, Mic } from "lucide-react";
 
 interface UserItem {
   user_id: string;
@@ -18,6 +18,7 @@ interface SidebarProps {
   onSelectUser: (user: UserItem) => void;
   onIdentifyClick: () => void;
   onRegisterClick: () => void;
+  onAddMemoriesClick: () => void;
   onDeleteClick: (userId: string) => void;
 }
 
@@ -27,10 +28,11 @@ export function Sidebar({
   onSelectUser,
   onIdentifyClick,
   onRegisterClick,
+  onAddMemoriesClick,
   onDeleteClick
 }: SidebarProps) {
   return (
-    <div className="w-64 border-r bg-sidebar flex flex-col h-screen">
+    <div className="w-64 border-r bg-sidebar flex flex-col h-screen shrink-0">
       <div className="p-4 border-b">
         <h1 className="text-xl font-semibold tracking-tight">MEMORA</h1>
         <p className="text-xs text-muted-foreground mt-1">Biometric Memory System</p>
@@ -38,20 +40,29 @@ export function Sidebar({
       
       <div className="p-3 space-y-2 border-b">
         <Button 
-          variant="default" 
-          className="w-full justify-start"
-          onClick={onIdentifyClick}
-        >
-          <Camera className="mr-2 h-4 w-4" />
-          Identify Self
-        </Button>
-        <Button 
           variant="outline" 
           className="w-full justify-start"
           onClick={onRegisterClick}
         >
           <PlusCircle className="mr-2 h-4 w-4" />
-          Register New User
+          Register User
+        </Button>
+        <Button 
+          variant="outline" 
+          className="w-full justify-start"
+          onClick={onIdentifyClick}
+        >
+          <Camera className="mr-2 h-4 w-4" />
+          Identify User
+        </Button>
+        <Button 
+          variant="default" 
+          className="w-full justify-start"
+          onClick={onAddMemoriesClick}
+          disabled={!currentUser}
+        >
+          <Mic className="mr-2 h-4 w-4" />
+          Add Memories
         </Button>
       </div>
 

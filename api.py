@@ -112,8 +112,7 @@ async def identify(file: UploadFile = File(...)):
 @app.post("/api/users/register")
 async def register(
     name: str = Form(...), 
-    face_image: UploadFile = File(...), 
-    audio_file: Optional[UploadFile] = File(None)
+    face_image: UploadFile = File(...)
 ):
     # 1. Process Face
     image_data = await face_image.read()
@@ -126,24 +125,6 @@ async def register(
     if face_emb is None:
         raise HTTPException(status_code=400, detail="No face detected in the provided image")
     
-    # 2. Process Voice
-    voice_emb = None
-    transcript = ""
-    if audio_file:
-        audio_data = await audio_file.read()
-        if len(audio_data) > 0:
-            system.voice_processor.clear()
-            system.voice_processor.add_audio_chunk(audio_data)
-            voice_emb = system.voice_processor.process_audio()
-            # Also transcribe to save as first memory!
-            transcript = transcribe_audio_bytes(audio_data)
-
-    # If the system strictly requires a voice embedding based on FUSION_WEIGHT, we might error if None.
-    # Currently _fuse_results falls back to mostly face if voice is missing, or we can just zero it out,
-    # but the DB handles missing voice_emb by skipping voice collection addition.
-    if voice_emb is None and config.FUSION_WEIGHT < 1.0:
-        Logger.warning("No voice added for this user.")
-        
     # Generate ID and Metadata manually
     user_id = f"{name.replace(' ', '_').lower()}_{int(time.time())}"
     metadata = {
@@ -153,18 +134,34 @@ async def register(
         'device': 'web'
     }
     
-    success = system.db.add_user(user_id, face_emb, voice_emb, metadata)
+    # Add face only, database permits voice_emb=None
+    success = system.db.add_user(user_id, face_emb, None, metadata)
     if not success:
         raise HTTPException(status_code=500, detail="Database insertion failed")
-        
-    if transcript:
-        conversation_store.store_utterance(user_id, transcript, source="register")
         
     return {
         "success": True,
         "user_id": user_id,
-        "name": name,
-        "transcript_saved": transcript
+        "name": name
+    }
+
+@app.post("/api/memories/add")
+async def add_memory(
+    user_id: str = Form(...),
+    audio_file: UploadFile = File(...)
+):
+    audio_data = await audio_file.read()
+    if not audio_data:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+        
+    transcript = transcribe_audio_bytes(audio_data)
+    if not transcript:
+        return {"success": False, "error": "No speech captured"}
+        
+    conversation_store.store_utterance(user_id, transcript, source="memory")
+    return {
+        "success": True,
+        "transcript": transcript
     }
 
 
