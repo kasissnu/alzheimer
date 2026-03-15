@@ -6,17 +6,18 @@ class MemoryRAG:
     def __init__(self):
 
         self.client = chromadb.Client()
+
         self.collection = self.client.get_or_create_collection(
             name="memories"
         )
 
-        self._load_demo_memories()
+        self.load_demo_memories()
 
-    # ---------------------------------
-    # Demo memories
-    # ---------------------------------
+    # -----------------------------
+    # Load example memories
+    # -----------------------------
 
-    def _load_demo_memories(self):
+    def load_demo_memories(self):
 
         memories = [
 
@@ -34,6 +35,12 @@ class MemoryRAG:
 
             {
                 "id": "3",
+                "user_id": "rahul_singh",
+                "text": "Rahul visited you yesterday"
+            },
+
+            {
+                "id": "4",
                 "user_id": "ananya",
                 "text": "Ananya is your daughter"
             }
@@ -47,9 +54,9 @@ class MemoryRAG:
                 metadatas=[{"user_id": m["user_id"]}]
             )
 
-    # ---------------------------------
-    # Query RAG
-    # ---------------------------------
+    # -----------------------------
+    # Query memories
+    # -----------------------------
 
     def answer_query(self, user_id, question):
 
@@ -63,21 +70,12 @@ class MemoryRAG:
 
         context = "\n".join(memories)
 
-        prompt = f"""
-The patient has Alzheimer's.
+        print("\nRetrieved memories:")
+        print(context)
 
-The person speaking is: {user_id}
+        # Simulated response
+        name = user_id.replace("_", " ").title()
 
-Known memories:
-{context}
-
-Patient asked:
-{question}
-
-Respond clearly and simply.
-"""
-
-        # For demo we simulate an LLM response
-        response = f"This is {user_id.replace('_',' ').title()}."
+        response = f"This is {name}. {memories[0]}."
 
         return response
