@@ -13,9 +13,13 @@ venv/
 # Databases
 chroma_db/
 chroma_memory/
+chroma_memory_db/
 
 # Model files
 pretrained_models/
+
+# Conversation logs
+conversation_logs/
 
 # Notebook checkpoints
 .ipynb_checkpoints/

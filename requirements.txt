@@ -1,0 +1,25 @@
+# MEMORA runtime dependencies
+#
+# System packages (not installable via pip):
+# - ffmpeg (required by openai-whisper)
+# - portaudio (required by pyaudio)
+
+numpy
+torch
+torchaudio
+soundfile
+
+opencv-python
+pyaudio
+openai-whisper
+
+chromadb
+sentence-transformers
+transformers
+accelerate
+
+speechbrain
+insightface
+
+onnxruntime; platform_system != "Darwin" or platform_machine != "arm64"
+onnxruntime-silicon; platform_system == "Darwin" and platform_machine == "arm64"

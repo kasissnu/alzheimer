@@ -14,21 +14,12 @@ from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional, Any
 import time
 import json
+from pathlib import Path
 import torch
 import numpy as np
 import chromadb
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForCausalLM
-
-import whisper
-stt_model = whisper.load_model("base")
-
-def transcribe(audio_buffer: list) -> str:
-    audio_data = b''.join(audio_buffer)
-    audio_array = (np.frombuffer(audio_data, dtype=np.int16)
-                   .astype(np.float32) / 32768.0)
-    result = stt_model.transcribe(audio_array, language="en")
-    return result["text"].strip()
 
 # =========================
 # CONFIG
@@ -46,10 +37,11 @@ class RAGConfig:
     min_similarity: float = 0.55
     max_context_chars: int = 2000
     fallback_response: str = "I am here with you. Please take your time."
+    conversation_log_dir: str = "./conversation_logs"
     system_prompt: str = (
         "You are a memory assistant for Alzheimer's patients.\n"
         "Use ONLY the provided memory context.\n"
-        "If the answer is not in the context, reply exactly with the fallback response.\n"
+        "If the answer is not in the context, reply exactly with: \"{fallback_response}\".\n"
         "Do NOT add new facts, dates, times, or opinions.\n"
         "Answer in ONE short sentence.\n"
         "Do NOT ask questions."
@@ -77,11 +69,13 @@ class MemoryItem:
 # =========================
 
 class MemoryRAG:
-    def __init__(self, config: RAGConfig = RAGConfig()):
-        self.config = config
+    def __init__(self, config: Optional[RAGConfig] = None):
+        self.config = config or RAGConfig()
+        self.device = self._resolve_device(self.config.device)
+        self._conversation_dir = Path(self.config.conversation_log_dir)
 
         # Embedding model
-        self.embedder = SentenceTransformer(self.config.embedding_model, device=self.config.device)
+        self.embedder = SentenceTransformer(self.config.embedding_model, device=self.device)
 
         # Chroma DB
         self.client = chromadb.PersistentClient(path=self.config.persist_dir)
@@ -92,19 +86,24 @@ class MemoryRAG:
 
         # LLM
         self.tokenizer = AutoTokenizer.from_pretrained(self.config.llm_model, trust_remote_code=True)
-        '''
+        llm_dtype = torch.float16 if self.device == "cuda" else torch.float32
+        llm_device_map = "auto" if self.device == "cuda" else None
         self.model = AutoModelForCausalLM.from_pretrained(
             self.config.llm_model,
             trust_remote_code=True,
-            device_map="auto"
+            torch_dtype=llm_dtype,
+            device_map=llm_device_map
         )
-    '''
-        self.model = AutoModelForCausalLM.from_pretrained(
-        self.config.llm_model,
-        trust_remote_code=True,
-        torch_dtype=torch.float16,
-        device_map={"": "cpu"}
-)
+        if self.device in ("cpu", "mps"):
+            self.model.to(self.device)
+
+    def _resolve_device(self, requested: str) -> str:
+        requested = (requested or "cpu").lower()
+        if requested == "cuda":
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        if requested == "mps":
+            return "mps" if torch.backends.mps.is_available() else "cpu"
+        return "cpu"
 
     # =========================
     # MEMORY STORAGE
@@ -213,8 +212,11 @@ class MemoryRAG:
                 "used_fallback": True
             }
 
+        system_prompt = self.config.system_prompt.format(
+            fallback_response=self.config.fallback_response
+        )
         messages = [
-            {"role": "system", "content": self.config.system_prompt},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"MEMORY CONTEXT:\n{context}\n\nQUESTION: {query}\n\nReturn ONE short sentence only."}
         ]
 
@@ -239,12 +241,71 @@ class MemoryRAG:
         if not response:
             response = self.config.fallback_response
 
+        used_fallback = (response.strip() == self.config.fallback_response)
 
         return {
             "response": response,
             "retrieved": retrieved,
-            "used_fallback": False
+            "used_fallback": used_fallback
         }
+
+    # =========================
+    # CONVERSATION LOGGING (separate from memory retrieval)
+    # =========================
+    def _conversation_log_path(self, user_id: str) -> Path:
+        safe = "".join(c if (c.isalnum() or c in ("-", "_")) else "_" for c in (user_id or "unknown"))
+        safe = safe[:100] if safe else "unknown"
+        return self._conversation_dir / f"{safe}.jsonl"
+
+    def store_conversation(
+        self,
+        user_id: str,
+        question: str,
+        answer: str,
+        *,
+        used_fallback: bool,
+        retrieved: Optional[List[Dict[str, Any]]] = None
+    ) -> Path:
+        record: Dict[str, Any] = {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "user_id": user_id,
+            "question": question,
+            "answer": answer,
+            "used_fallback": used_fallback
+        }
+        if retrieved is not None:
+            record["retrieved"] = [
+                {
+                    "text": r.get("text"),
+                    "similarity": r.get("similarity"),
+                    "metadata": r.get("metadata", {})
+                }
+                for r in retrieved
+            ]
+
+        path = self._conversation_log_path(user_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return path
+
+    def get_conversation_history(self, user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        path = self._conversation_log_path(user_id)
+        if not path.exists() or limit <= 0:
+            return []
+
+        entries: List[Dict[str, Any]] = []
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+
+        return entries[-limit:]
 
 
 # =========================

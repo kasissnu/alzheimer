@@ -28,92 +28,95 @@ import os
 import sys
 import shutil
 from pathlib import Path
-import whisper
-from memory_rag import MemoryRAG, MemoryItem, RAGConfig
-
-stt_model = whisper.load_model("base")
-
-def transcribe(audio_buffer: list) -> str:
-    audio_data = b''.join(audio_buffer)
-    audio_array = (np.frombuffer(audio_data, dtype=np.int16)
-                   .astype(np.float32) / 32768.0)
-    result = stt_model.transcribe(audio_array, language="en")
-    return result["text"].strip()
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
 
-print("[SYSTEM] Initializing Memora...\n")
+_PATCHES_APPLIED = False
 
-# FIX 1: Patch SpeechBrain to copy files instead of symlinks
-try:
-    import speechbrain.utils.fetching as sb_fetch
-    
-    _original_link_with_strategy = sb_fetch.link_with_strategy
-    
-    def patched_link_with_strategy(src, dst, local_strategy):
-        """Force file copying instead of symlinks"""
-        try:
-            dst = Path(dst)
-            src = Path(src)
-            
-            if dst.exists():
-                return dst
-            
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Always copy files, never symlink
-            if src.is_file():
-                shutil.copy2(str(src), str(dst))
-                return dst
-            elif src.is_dir():
-                shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
-                return dst
-            
-            return src
-        except Exception:
-            return src
-    
-    sb_fetch.link_with_strategy = patched_link_with_strategy
-    print("[PATCH]  SpeechBrain file copying enabled")
-    
-except Exception as e:
-    print(f"[WARNING] SpeechBrain patch: {e}")
+def apply_runtime_patches(verbose: bool = True) -> None:
+    global _PATCHES_APPLIED
+    if _PATCHES_APPLIED:
+        return
 
-# FIX 2: Patch HuggingFace for auth token compatibility
-try:
-    import huggingface_hub
-    from functools import wraps
-    
-    _original_hf_hub_download = huggingface_hub.hf_hub_download
-    
-    @wraps(_original_hf_hub_download)
-    def patched_hf_hub_download(*args, **kwargs):
-        """Fix deprecated use_auth_token parameter"""
-        if 'use_auth_token' in kwargs:
-            kwargs['token'] = kwargs.pop('use_auth_token')
-        return _original_hf_hub_download(*args, **kwargs)
-    
-    huggingface_hub.hf_hub_download = patched_hf_hub_download
-    print("[PATCH]  HuggingFace Hub compatibility")
-    
-except Exception as e:
-    print(f"[WARNING] HF Hub patch: {e}")
+    if verbose:
+        print("[SYSTEM] Initializing Memora...\n")
 
+    # FIX 1: Patch SpeechBrain to copy files instead of symlinks
+    try:
+        import speechbrain.utils.fetching as sb_fetch
 
-# FIX 3: TorchAudio compatibility
-try:
-    import torchaudio
-    if not hasattr(torchaudio, 'list_audio_backends'):
-        torchaudio.list_audio_backends = lambda: ['soundfile']
-    warnings.filterwarnings('ignore', category=UserWarning, module='torchaudio')
-    print("[PATCH]  TorchAudio compatibility")
-except:
-    pass
+        _original_link_with_strategy = sb_fetch.link_with_strategy
 
-print("[SYSTEM] All patches applied\n")
+        def patched_link_with_strategy(src, dst, local_strategy):
+            """Force file copying instead of symlinks"""
+            try:
+                dst = Path(dst)
+                src = Path(src)
+
+                if dst.exists():
+                    return dst
+
+                dst.parent.mkdir(parents=True, exist_ok=True)
+
+                # Always copy files, never symlink
+                if src.is_file():
+                    shutil.copy2(str(src), str(dst))
+                    return dst
+                elif src.is_dir():
+                    shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
+                    return dst
+
+                return src
+            except Exception:
+                return src
+
+        sb_fetch.link_with_strategy = patched_link_with_strategy
+        if verbose:
+            print("[PATCH]  SpeechBrain file copying enabled")
+
+    except Exception as e:
+        if verbose:
+            print(f"[WARNING] SpeechBrain patch: {e}")
+
+    # FIX 2: Patch HuggingFace for auth token compatibility
+    try:
+        import huggingface_hub
+        from functools import wraps
+
+        _original_hf_hub_download = huggingface_hub.hf_hub_download
+
+        @wraps(_original_hf_hub_download)
+        def patched_hf_hub_download(*args, **kwargs):
+            """Fix deprecated use_auth_token parameter"""
+            if 'use_auth_token' in kwargs:
+                kwargs['token'] = kwargs.pop('use_auth_token')
+            return _original_hf_hub_download(*args, **kwargs)
+
+        huggingface_hub.hf_hub_download = patched_hf_hub_download
+        if verbose:
+            print("[PATCH]  HuggingFace Hub compatibility")
+
+    except Exception as e:
+        if verbose:
+            print(f"[WARNING] HF Hub patch: {e}")
+
+    # FIX 3: TorchAudio compatibility
+    try:
+        import torchaudio
+        if not hasattr(torchaudio, 'list_audio_backends'):
+            torchaudio.list_audio_backends = lambda: ['soundfile']
+        warnings.filterwarnings('ignore', category=UserWarning, module='torchaudio')
+        if verbose:
+            print("[PATCH]  TorchAudio compatibility")
+    except Exception:
+        pass
+
+    _PATCHES_APPLIED = True
+    if verbose:
+        print("[SYSTEM] All patches applied\n")
 
 
 # CONFIGURATION
@@ -129,7 +132,7 @@ class SystemConfig:
     FACE_DET_SIZE: tuple = (640, 640)
     VOICE_MODEL: str = "speechbrain/spkrec-ecapa-voxceleb"
     
-    CAMERA_ID: int = 1
+    CAMERA_ID: int = 0
     FRAME_WIDTH: int = 640
     FRAME_HEIGHT: int = 480
     TARGET_FPS: int = 15
@@ -469,12 +472,19 @@ class DatabaseManager:
     def list_users(self) -> List[dict]:
         try:
             face_data = self.face_collection.get()
-            users = {}
-            for metadata in face_data['metadatas']:
-                name = metadata.get('name', 'Unknown')
-                if name not in users:
-                    users[name] = metadata
-            return list(users.values())
+            users_by_id = {}
+            for doc_id, metadata in zip(face_data.get('ids', []), face_data.get('metadatas', [])):
+                metadata = metadata or {}
+                user_id = metadata.get('user_id')
+                if not user_id and isinstance(doc_id, str) and doc_id.startswith("face_"):
+                    user_id = doc_id[len("face_"):]
+                    metadata = dict(metadata)
+                    metadata['user_id'] = user_id
+
+                if user_id and user_id not in users_by_id:
+                    users_by_id[user_id] = metadata
+
+            return list(users_by_id.values())
         except Exception as e:
             Logger.error(f"Failed to list users: {e}")
             return []
@@ -575,6 +585,15 @@ class BiometricMemorySystem:
     
     def __init__(self, config: Optional[SystemConfig] = None):
         self.config = config or SystemConfig()
+
+        camera_id_env = os.getenv("MEMORA_CAMERA_ID")
+        if camera_id_env:
+            try:
+                self.config.CAMERA_ID = int(camera_id_env)
+            except ValueError:
+                Logger.warning(f"Invalid MEMORA_CAMERA_ID='{camera_id_env}', using {self.config.CAMERA_ID}")
+
+        apply_runtime_patches(verbose=True)
         
         Logger.info(f"Initializing on {self.config.DEVICE.upper()}...")
         
@@ -591,10 +610,14 @@ class BiometricMemorySystem:
     def _camera_worker(self, duration: float):
         cap = None
         try:
-            #cap = cv2.VideoCapture(self.config.CAMERA_ID)
-            cap = cv2.VideoCapture(self.config.CAMERA_ID, cv2.CAP_AVFOUNDATION)
-
-
+            if sys.platform == "darwin":
+                cap = cv2.VideoCapture(self.config.CAMERA_ID, cv2.CAP_AVFOUNDATION)
+                if cap is not None and not cap.isOpened():
+                    cap.release()
+                    cap = cv2.VideoCapture(self.config.CAMERA_ID)
+            else:
+                cap = cv2.VideoCapture(self.config.CAMERA_ID)
+            
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.FRAME_WIDTH)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.FRAME_HEIGHT)
 
@@ -609,22 +632,12 @@ class BiometricMemorySystem:
                 ret, frame = cap.read()
                 if not ret:
                     continue
-                # added to detect faces in the current frame and update the face processor
-                #rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                faces = self.model_manager.face_model.get(frame)
-                print("Faces detected:", len(faces))
-                #faces = self.face_model.get(rgb_frame)
                 
                 self.face_processor.process_frame(frame)
                 
                 status = f"Samples: {len(self.face_processor.embeddings)}/{self.config.MIN_FACE_SAMPLES}"
                 cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                #cv2.imshow('MEMORA', frame)
-                pass  # Commented out to avoid GUI issues in headless environments
-                
-                #if cv2.waitKey(1) & 0xFF == ord('q'):
-                 #   self.running = False
-                  #  break
+
         finally:
             if cap:
                 cap.release()
@@ -687,6 +700,7 @@ class BiometricMemorySystem:
         
         user_id = f"{user_name}_{int(time.time())}"
         metadata = {
+            'user_id': user_id,
             'name': user_name,
             'registered_at': time.strftime('%Y-%m-%d %H:%M:%S'),
             'device': self.config.DEVICE
@@ -739,44 +753,70 @@ class BiometricMemorySystem:
         Logger.info("\n=== Recognition Results ===")
         
         face_scores = {}
-        for meta, dist in zip(face_results['metadatas'][0], face_results['distances'][0]):
-            name = meta.get('name', 'Unknown')
-            face_scores[name] = 1 - dist
+        user_names = {}
+        for doc_id, meta, dist in zip(face_results.get('ids', [[]])[0], face_results.get('metadatas', [[]])[0], face_results.get('distances', [[]])[0]):
+            meta = meta or {}
+            user_id = meta.get('user_id')
+            if not user_id and isinstance(doc_id, str) and doc_id.startswith("face_"):
+                user_id = doc_id[len("face_"):]
+            if not user_id:
+                continue
+            face_scores[user_id] = max(face_scores.get(user_id, 0.0), 1 - dist)
+            user_names.setdefault(user_id, meta.get('name', 'Unknown'))
         
         voice_scores = {}
-        for meta, dist in zip(voice_results['metadatas'][0], voice_results['distances'][0]):
-            name = meta.get('name', 'Unknown')
-            voice_scores[name] = 1 - dist
+        for doc_id, meta, dist in zip(voice_results.get('ids', [[]])[0], voice_results.get('metadatas', [[]])[0], voice_results.get('distances', [[]])[0]):
+            meta = meta or {}
+            user_id = meta.get('user_id')
+            if not user_id and isinstance(doc_id, str) and doc_id.startswith("voice_"):
+                user_id = doc_id[len("voice_"):]
+            if not user_id:
+                continue
+            voice_scores[user_id] = max(voice_scores.get(user_id, 0.0), 1 - dist)
+            user_names.setdefault(user_id, meta.get('name', 'Unknown'))
         
-        all_names = set(list(face_scores.keys()) + list(voice_scores.keys()))
+        all_user_ids = set(list(face_scores.keys()) + list(voice_scores.keys()))
         fusion_scores = {}
         
-        for name in all_names:
-            face_score = face_scores.get(name, 0.0)
-            voice_score = voice_scores.get(name, 0.0)
+        for user_id in all_user_ids:
+            face_score = face_scores.get(user_id, 0.0)
+            voice_score = voice_scores.get(user_id, 0.0)
             fused = self.config.FUSION_WEIGHT * face_score + (1 - self.config.FUSION_WEIGHT) * voice_score
-            fusion_scores[name] = {'face': face_score, 'voice': voice_score, 'fused': fused}
+            fusion_scores[user_id] = {'face': face_score, 'voice': voice_score, 'fused': fused}
+
+        if not fusion_scores:
+            Logger.error("No recognition results")
+            return {
+                'verified': False,
+                'identity': None,
+                'name': None,
+                'confidence': "LOW",
+                'fused_score': 0.0,
+                'scores': {'face': 0.0, 'voice': 0.0, 'fused': 0.0}
+            }
         
-        best_name = max(fusion_scores, key=lambda x: fusion_scores[x]['fused'])
-        best_scores = fusion_scores[best_name]
+        best_user_id = max(fusion_scores, key=lambda x: fusion_scores[x]['fused'])
+        best_scores = fusion_scores[best_user_id]
         fused_score = best_scores['fused']
+        best_name = user_names.get(best_user_id, 'Unknown')
         
-        Logger.info(f"Best match: {best_name}")
+        Logger.info(f"Best match: {best_name} [{best_user_id}]")
         Logger.info(f"  Face: {best_scores['face']:.3f} | Voice: {best_scores['voice']:.3f} | Fused: {fused_score:.3f}")
         
         if fused_score >= self.config.CONFIDENCE_HIGH:
             verified, confidence = True, "HIGH"
-            Logger.success(f" VERIFIED: {best_name} ({confidence})")
+            Logger.success(f" VERIFIED: {best_name} [{best_user_id}] ({confidence})")
         elif fused_score >= self.config.CONFIDENCE_MEDIUM:
             verified, confidence = True, "MEDIUM"
-            Logger.success(f" VERIFIED: {best_name} ({confidence})")
+            Logger.success(f" VERIFIED: {best_name} [{best_user_id}] ({confidence})")
         else:
             verified, confidence = False, "LOW"
-            Logger.warning(f" REJECTED: {best_name}")
+            Logger.warning(f" REJECTED: {best_name} [{best_user_id}]")
         
         return {
             'verified': verified,
-            'identity': best_name if verified else None,
+            'identity': best_user_id if verified else None,
+            'name': best_name if verified else None,
             'confidence': confidence,
             'fused_score': fused_score,
             'scores': best_scores
@@ -789,7 +829,7 @@ class BiometricMemorySystem:
             return
         Logger.info(f"\n=== Registered Users ({len(users)}) ===")
         for i, user in enumerate(users, 1):
-            Logger.info(f"  {i}. {user.get('name')} ({user.get('registered_at')})")
+            Logger.info(f"  {i}. {user.get('name')} [{user.get('user_id', '?')}] ({user.get('registered_at')})")
     
     def cleanup(self):
         self.running = False
@@ -798,63 +838,3 @@ class BiometricMemorySystem:
         self.model_manager.unload_models()
         Logger.info("Cleanup complete")
 
-
-# CLI
-
-def main():
-    config = SystemConfig()
-    
-    try:
-        system = BiometricMemorySystem(config)
-        
-        print("\n" + "="*50)
-        print("        MEMORA - Biometric Memory System")
-        print("="*50)
-        print(f"Device: {config.DEVICE.upper()}")
-        print(f"Face Model: {config.FACE_MODEL}")
-        print(f"Quantization: {'Enabled' if config.USE_QUANTIZATION else 'Disabled'}")
-        print("="*50)
-        
-        while True:
-            print("\n[1] Register new user")
-            print("[2] Verify identity")
-            print("[3] List registered users")
-            print("[4] Exit")
-            
-            choice = input("\nEnter choice: ").strip()
-            
-            if choice == "1":
-                user_name = input("Enter user name: ").strip()
-                if user_name:
-                    system.register_user(user_name)
-                else:
-                    Logger.warning("Name cannot be empty")
-            
-            elif choice == "2":
-                result = system.verify_user()
-           
-            elif choice == "3":
-                system.list_users()
-            
-            elif choice == "4":
-                Logger.info("Shutting down...")
-                system.cleanup()
-                break
-            
-            else:
-                Logger.warning("Invalid choice")
-        
-    except KeyboardInterrupt:
-        Logger.info("\nInterrupted")
-    except Exception as e:
-        Logger.error(f"System error: {e}")
-        traceback.print_exc()
-    finally:
-        try:
-            system.cleanup()
-        except:
-            pass
-
-
-if __name__ == "__main__":
-    main()
