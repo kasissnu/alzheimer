@@ -6,6 +6,7 @@ import whisper
 
 from biometric_memory_system import BiometricMemorySystem, SystemConfig
 from conversation_store import ConversationStore
+from conversation_summarizer import ConversationSummarizer
 
 
 print("[STARTUP] Loading Whisper STT...")
@@ -26,6 +27,7 @@ print("[STARTUP] Loading biometric system...")
 config = SystemConfig()
 system = BiometricMemorySystem(config)
 conversation_store = ConversationStore()
+conversation_summarizer = ConversationSummarizer()
 print("[STARTUP] All systems ready\n")
 
 
@@ -83,7 +85,12 @@ def prompt_for_user_id_by_name(prompt_text: str) -> Optional[str]:
 
 
 def print_history_summary(user_id: str) -> None:
-    summary = conversation_store.summarize_history(user_id)
+    entries = conversation_store.get_history(user_id, limit=None)
+    if not entries:
+        print("\n[CONTEXT] No prior memories are stored for this user yet.")
+        return
+
+    summary = conversation_summarizer.summarize(entries)
     print(f"\n[CONTEXT] {summary}")
 
 

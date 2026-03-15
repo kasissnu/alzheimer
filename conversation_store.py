@@ -1,18 +1,7 @@
 import json
-import re
 import time
-from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional
-
-
-STOPWORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
-    "had", "has", "have", "he", "her", "his", "i", "in", "is", "it", "its",
-    "me", "my", "of", "on", "or", "our", "she", "that", "the", "their",
-    "them", "there", "they", "this", "to", "was", "we", "were", "with",
-    "you", "your",
-}
 
 
 class ConversationStore:
@@ -67,46 +56,37 @@ class ConversationStore:
             return entries
         return entries[-limit:]
 
-    def summarize_history(self, user_id: str) -> str:
-        entries = self.get_history(user_id, limit=None)
-        if not entries:
-            return "No prior conversations stored for this user."
-
-        oldest_timestamp = entries[0].get("timestamp", "unknown")
-        newest_timestamp = entries[-1].get("timestamp", "unknown")
-        topics = self._extract_topics(entries)
-        recent_points = self._recent_points(entries, count=3)
-
-        parts = [
-            f"There are {len(entries)} stored memories from {oldest_timestamp} to {newest_timestamp}."
-        ]
-        if topics:
-            parts.append(f"Main topics include {', '.join(topics)}.")
-        if recent_points:
-            parts.append(f"Recent memories mention {recent_points}.")
-
-        return " ".join(parts)
-
-    def _extract_topics(self, entries: List[Dict], limit: int = 5) -> List[str]:
-        words = Counter()
-        for entry in entries:
-            text = entry.get("text", "").lower()
-            for token in re.findall(r"[a-zA-Z']+", text):
-                if len(token) <= 3 or token in STOPWORDS:
-                    continue
-                words[token] += 1
-        return [word for word, _count in words.most_common(limit)]
-
-    def _recent_points(self, entries: List[Dict], count: int = 3) -> str:
-        recent_texts = []
-        for entry in entries[-count:]:
-            text = " ".join(entry.get("text", "").split())
+    def format_entries_for_summary(
+        self,
+        entries: List[Dict],
+        max_chars: Optional[int] = None
+    ) -> str:
+        formatted_entries: List[str] = []
+        for index, entry in enumerate(entries, start=1):
+            text = " ".join(str(entry.get("text", "")).split())
             if not text:
                 continue
-            if len(text) > 80:
-                text = text[:77].rstrip() + "..."
-            recent_texts.append(text)
-        return "; ".join(recent_texts)
+
+            timestamp = entry.get("timestamp", "unknown time")
+            source = entry.get("source", "memory")
+            formatted_entries.append(
+                f"{index}. [{timestamp}] ({source}) {text}"
+            )
+
+        history_text = "\n".join(formatted_entries)
+        if max_chars is not None and max_chars > 0 and len(history_text) > max_chars:
+            return history_text[-max_chars:]
+        return history_text
+
+    def format_history_for_summary(
+        self,
+        user_id: str,
+        max_chars: Optional[int] = None
+    ) -> str:
+        return self.format_entries_for_summary(
+            self.get_history(user_id, limit=None),
+            max_chars=max_chars
+        )
 
     def list_users(self) -> List[str]:
         if not self.base_dir.exists():
