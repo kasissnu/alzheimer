@@ -1,8 +1,0 @@
-
-flask
-whisper
-torch
-torchaudio
-chromadb
-TTS
-numpy
