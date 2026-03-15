@@ -1,4 +1,8 @@
+torch
+torchaudio
+whisper
 chromadb
 sentence-transformers
-transformers
-accelerate
+TTS
+numpy
+opencv-python
