@@ -73,7 +73,7 @@ Example prompts:
 
 ```text id="t8hq0b"
 Who is this person?
-````
+```
 
 ```text id="81pp6r"
 How do I know them?
